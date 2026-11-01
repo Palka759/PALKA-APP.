@@ -12,6 +12,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Unpack PALKA
+        run: |
+          unzip -o PALKA_FIXED_SOURCE.zip -d extracted
+          cp -R extracted/. .
+          rm -rf extracted
+
       - name: Setup Java
         uses: actions/setup-java@v4
         with:

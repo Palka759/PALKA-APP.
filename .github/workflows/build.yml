@@ -9,14 +9,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Download repository
+      - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Unpack PALKA
-        run: |
-          unzip -o PALKA_bundle_2026.zip -d extracted
-          cp -R extracted/. .
-          rm -rf extracted
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -27,12 +21,12 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '9.3.1'
+          gradle-version: '8.13'
 
       - name: Build APK
         run: gradle assembleDebug
 
-      - name: Save APK
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: PALKA-APK

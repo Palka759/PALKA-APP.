@@ -16,49 +16,51 @@ jobs:
       - name: Prepare PALKA source
         shell: bash
         run: |
-          set -e
-
+          set -euo pipefail
           if [ ! -f settings.gradle.kts ] || [ ! -d app/src/main ]; then
             ZIP_FILE="$(find . -maxdepth 3 -type f -iname 'PALKA_FIXED_SOURCE*.zip' -print -quit)"
-
-            if [ -z "$ZIP_FILE" ]; then
-              echo "PALKA source ZIP not found"
-              exit 1
-            fi
-
+            test -n "$ZIP_FILE" || { echo "PALKA source ZIP not found"; exit 1; }
             mkdir -p extracted
             unzip -o "$ZIP_FILE" -d extracted
-
             if [ -f extracted/settings.gradle.kts ]; then
               cp -R extracted/. .
             else
               ROOT="$(find extracted -mindepth 1 -maxdepth 3 -type f -name settings.gradle.kts -print -quit | xargs -r dirname)"
-
-              if [ -z "$ROOT" ]; then
-                echo "Could not find settings.gradle.kts inside archive"
-                exit 1
-              fi
-
+              test -n "$ROOT" || { echo "Could not find settings.gradle.kts inside archive"; exit 1; }
               cp -R "$ROOT"/. .
             fi
           fi
-
           test -f settings.gradle.kts
+          test -f app/build.gradle.kts
           test -d app/src/main
 
-      - name: Create Supabase config
+      - name: Validate Supabase secrets without printing them
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        shell: bash
         run: |
-          set -e
-          test -n "$SUPABASE_URL" || (echo "Missing SUPABASE_URL" && exit 1)
-          test -n "$SUPABASE_ANON_KEY" || (echo "Missing SUPABASE_ANON_KEY" && exit 1)
-
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, re, sys
+          url = os.environ.get("SUPABASE_URL", "").strip()
+          key = os.environ.get("SUPABASE_ANON_KEY", "").strip()
+          checks = {
+              "URL is present": bool(url),
+              "URL uses https": url.startswith("https://"),
+              "URL has Supabase project hostname": bool(re.fullmatch(r"https://[a-z0-9-]+\.supabase\.co/?", url)),
+              "anon key is present": bool(key),
+          }
+          for label, ok in checks.items():
+              print(f"{label}: {'OK' if ok else 'FAIL'}")
+          if not all(checks.values()):
+              sys.exit("Supabase secret validation failed; values were not printed.")
+          PY
           {
-            echo "SUPABASE_URL=$SUPABASE_URL"
-            echo "SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY"
+            printf 'SUPABASE_URL=%s\n' "$SUPABASE_URL"
+            printf 'SUPABASE_ANON_KEY=%s\n' "$SUPABASE_ANON_KEY"
           } > secrets.properties
+          chmod 600 secrets.properties
 
       - name: Set up Java
         uses: actions/setup-java@v4
@@ -71,34 +73,58 @@ jobs:
         with:
           gradle-version: '8.13'
 
-      - name: Build debug APK
+      - name: Build and verify compiled configuration
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        shell: bash
         run: |
-          set -e
-          gradle --no-daemon assembleDebug
+          set -euo pipefail
+          gradle --no-daemon clean assembleDebug
 
           python3 - <<'PY'
+          import os, re, sys
           from pathlib import Path
-          import re
 
-          files = list(Path("app/build/generated/source/buildConfig").rglob("BuildConfig.java"))
-
-          if not files:
-              raise SystemExit("BuildConfig.java was not generated")
-
+          expected = {
+              "SUPABASE_URL": os.environ["SUPABASE_URL"].strip(),
+              "SUPABASE_ANON_KEY": os.environ["SUPABASE_ANON_KEY"].strip(),
+          }
+          files = list(Path("app/build/generated").rglob("BuildConfig.java"))
+          files = [p for p in files if "com/palka/app/BuildConfig.java" in str(p)]
+          if len(files) != 1:
+              sys.exit(f"Expected exactly one PALKA BuildConfig.java, found {len(files)}")
           source = files[0].read_text()
+          print(f"BuildConfig path: {files[0]}")
+          for name, value in expected.items():
+              match = re.search(rf'{name}\s*=\s*"((?:\\.|[^"\\])*)"\s*;', source)
+              if not match:
+                  sys.exit(f"{name}: field missing from generated BuildConfig")
+              compiled = bytes(match.group(1), "utf-8").decode("unicode_escape")
+              ok = compiled == value
+              print(f"{name}: exact match with GitHub secret = {'OK' if ok else 'FAIL'}; length={len(compiled)}")
+              if not ok:
+                  sys.exit(f"{name} did not reach BuildConfig unchanged")
+          print("Generated BuildConfig matches both GitHub secrets.")
+          PY
 
-          for name in ("SUPABASE_URL", "SUPABASE_ANON_KEY"):
-              if re.search(name + r'\s*=\s*""', source):
-                  raise SystemExit(name + " was compiled as empty")
-
-          print("Supabase config verified; values hidden.")
+          python3 - <<'PY'
+          import os, sys, zipfile
+          from pathlib import Path
+          apk = Path("app/build/outputs/apk/debug/app-debug.apk")
+          if not apk.is_file():
+              sys.exit("APK was not produced")
+          url = os.environ["SUPABASE_URL"].strip().encode()
+          with zipfile.ZipFile(apk) as z:
+              dex_files = [z.read(n) for n in z.namelist() if n.endswith(".dex")]
+          url_found = any(url in dex for dex in dex_files)
+          print(f"Project URL embedded in APK DEX: {'OK' if url_found else 'FAIL'}")
+          if not url_found:
+              sys.exit("BuildConfig matched, but project URL was not found in APK DEX.")
           PY
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: PALKA-APK
+          name: PALKA-APK-DIAGNOSTIC
           path: app/build/outputs/apk/debug/app-debug.apk

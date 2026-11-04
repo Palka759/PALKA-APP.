@@ -12,34 +12,56 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Unpack PALKA
+      - name: Prepare PALKA source
+        shell: bash
         run: |
-          unzip -o PALKA_FIXED_SOURCE.zip -d extracted
-          cp -R extracted/. .
-          rm -rf extracted
+          set -e
+          if [ ! -f settings.gradle.kts ] || [ ! -d app/src/main ]; then
+            ZIP_FILE="$(find . -maxdepth 3 -type f -iname 'PALKA_FIXED_SOURCE*.zip' -print -quit)"
+            if [ -z "$ZIP_FILE" ]; then
+              echo "PALKA source ZIP not found"
+              exit 1
+            fi
+            mkdir -p extracted
+            unzip -o "$ZIP_FILE" -d extracted
+            if [ -f extracted/settings.gradle.kts ]; then
+              cp -R extracted/. .
+            else
+              ROOT="$(find extracted -mindepth 1 -maxdepth 3 -type f -name settings.gradle.kts -print -quit | xargs -r dirname)"
+              if [ -z "$ROOT" ]; then
+                echo "Could not find settings.gradle.kts inside archive"
+                exit 1
+              fi
+              cp -R "$ROOT"/. .
+            fi
+          fi
+          test -f settings.gradle.kts
+          test -d app/src/main
 
       - name: Create Supabase config
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         run: |
+          test -n "$SUPABASE_URL" || (echo "Missing SUPABASE_URL" && exit 1)
+          test -n "$SUPABASE_ANON_KEY" || (echo "Missing SUPABASE_ANON_KEY" && exit 1)
           {
             echo "SUPABASE_URL=$SUPABASE_URL"
             echo "SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY"
           } > secrets.properties
 
-      - name: Setup Java
+      - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Setup Gradle
+      - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.13'
 
-      - name: Build APK
+      - name: Build debug APK
         run: gradle assembleDebug
 
       - name: Upload APK
@@ -47,3 +69,4 @@ jobs:
         with:
           name: PALKA-APK
           path: app/build/outputs/apk/debug/app-debug.apk
+          

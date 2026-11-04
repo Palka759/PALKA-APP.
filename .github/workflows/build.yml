@@ -8,6 +8,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -16,25 +17,32 @@ jobs:
         shell: bash
         run: |
           set -e
+
           if [ ! -f settings.gradle.kts ] || [ ! -d app/src/main ]; then
             ZIP_FILE="$(find . -maxdepth 3 -type f -iname 'PALKA_FIXED_SOURCE*.zip' -print -quit)"
+
             if [ -z "$ZIP_FILE" ]; then
               echo "PALKA source ZIP not found"
               exit 1
             fi
+
             mkdir -p extracted
             unzip -o "$ZIP_FILE" -d extracted
+
             if [ -f extracted/settings.gradle.kts ]; then
               cp -R extracted/. .
             else
               ROOT="$(find extracted -mindepth 1 -maxdepth 3 -type f -name settings.gradle.kts -print -quit | xargs -r dirname)"
+
               if [ -z "$ROOT" ]; then
                 echo "Could not find settings.gradle.kts inside archive"
                 exit 1
               fi
+
               cp -R "$ROOT"/. .
             fi
           fi
+
           test -f settings.gradle.kts
           test -d app/src/main
 
@@ -43,8 +51,10 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         run: |
+          set -e
           test -n "$SUPABASE_URL" || (echo "Missing SUPABASE_URL" && exit 1)
           test -n "$SUPABASE_ANON_KEY" || (echo "Missing SUPABASE_ANON_KEY" && exit 1)
+
           {
             echo "SUPABASE_URL=$SUPABASE_URL"
             echo "SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY"
@@ -62,11 +72,33 @@ jobs:
           gradle-version: '8.13'
 
       - name: Build debug APK
-        run: gradle assembleDebug
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          set -e
+          gradle --no-daemon assembleDebug
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          files = list(Path("app/build/generated/source/buildConfig").rglob("BuildConfig.java"))
+
+          if not files:
+              raise SystemExit("BuildConfig.java was not generated")
+
+          source = files[0].read_text()
+
+          for name in ("SUPABASE_URL", "SUPABASE_ANON_KEY"):
+              if re.search(name + r'\s*=\s*""', source):
+                  raise SystemExit(name + " was compiled as empty")
+
+          print("Supabase config verified; values hidden.")
+          PY
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: PALKA-APK
           path: app/build/outputs/apk/debug/app-debug.apk
-          

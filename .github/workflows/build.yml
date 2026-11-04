@@ -16,9 +16,9 @@ jobs:
         run: |
           unzip -o PALKA_FIXED_SOURCE.zip -d extracted
           cp -R extracted/. .
-          rm -rf extracted       
-          
-          - name: Create Supabase config
+          rm -rf extracted
+
+      - name: Create Supabase config
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
